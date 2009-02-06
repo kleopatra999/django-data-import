@@ -41,7 +41,7 @@ class Field(object):
 	creation_counter = 0
 	def __init__(self,slave_field_name,uses_import=None,max_length=None,max_value=None,if_null=None, value=None,verify_by=None,map=None,clean_function=None):
 		if clean_function:
-			self.clean_function=clean_function
+			self.custom_clean_function=clean_function
 		self.map = map
 		self.test = False 
 		self.max_length = max_length
@@ -181,49 +181,52 @@ class Field(object):
 
 	def clean(self,value):
 		if self.value != None: 
-			" Maybe user provided a value=Value on the field "
+			"""
+			Value was explicitly set for this field importer.Field('x',value='FOO') 
+			"""
 			return self.value
 	
 		if self.map:
+			"""
+			Map was given, a la importer.Field('x',map={'0': False,'1': True}) 
+			"""
 			if value in self.map.keys():
 				value = self.map[value]
 
-		if hasattr(self,'clean_function'):
-			value = self.clean_function(value)
-
-		if self.max_length and value == str(value):
-			value = value[:self.max_length]
+		if hasattr(self,'custom_clean_function'):
+			"""
+			Route through custom function like imporer.Field('x',custom_function=clean_dates)
+			"""
+			value = self.custom_clean_function(value)
 
 		if isinstance(self.master,ForeignKey) or isinstance(self.master,OneToOneField):
+			"""
+			Some core prep work for FKs. Use the variant already provided by user.
+			"""
 			if str(value).lower() in self.variants.keys(): 
 				return self.variants[str(value).lower()]
-			return None	# Return nothing. Maybe clean_FOO will be populating this value.
 				
 		elif isinstance(self.master,DecimalField):
-			if not value and not self.master.null:
-				return self.if_null
-
+			"""
+			Respect max_value if field was decimal. TODO: Expand to INT
+			"""
 			if value != None:
 				value = Decimal('%s' % value)
 				if self.max_value and self.max_value < value:
 					return self.max_value
-			return value
 
 		elif isinstance(self.master,CharField) or isinstance(self.master,TextField):
+			"""
+			Do some quick and dirty char encoding to make sure source data wasn't junky
+			"""
 			if value:
 				value = '%s' % value.encode('ascii','ignore')
 				if getattr(self.master,'max_length',False) and len(value) > self.master.max_length:
 					return '%s' % value[:self.master.max_length]
-			else:
-				if not self.if_null == None:
-					return '%s' % self.if_null
-			return value
 
-		# Catchall
 		if not value:
 			return self.if_null
-		if getattr(self.master,'max_length',False) and len(value) > self.master.max_length:
-			return '%s' % value[:self.master.max_length]
+
 		return value
 
 def get_declared_fields(bases, attrs, with_base_fields=True):
