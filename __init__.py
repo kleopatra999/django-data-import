@@ -1,7 +1,5 @@
 import pdb
 from decimal import Decimal
-from time import strptime
-from datetime import datetime
 from time import sleep
 
 from django.utils.datastructures import SortedDict
@@ -41,7 +39,10 @@ class ValidationError(Exception):
 class Field(object):
 	" Derived from django.forms.Field "
 	creation_counter = 0
-	def __init__(self,slave_field_name,uses_import=None,max_length=None,max_value=None,if_null=None, value=None,verify_by=None):
+	def __init__(self,slave_field_name,uses_import=None,max_length=None,max_value=None,if_null=None, value=None,verify_by=None,map=None,clean_function=None):
+		if clean_function:
+			self.clean_function=clean_function
+		self.map = map
 		self.test = False 
 		self.max_length = max_length
 		self.verify_by = verify_by or []
@@ -179,10 +180,17 @@ class Field(object):
 				return self.master.rel.to.objects.get_or_create(**new_model)[0]
 
 	def clean(self,value):
-		# WTF was I doing here?! Comments please asshole!!!!
-		#if self.value != None:
-		#	return self.value
-		
+		if self.value != None: 
+			" Maybe user provided a value=Value on the field "
+			return self.value
+	
+		if self.map:
+			if value in self.map.keys():
+				value = self.map[value]
+
+		if hasattr(self,'clean_function'):
+			value = self.clean_function(value)
+
 		if self.max_length and value == str(value):
 			value = value[:self.max_length]
 
@@ -191,20 +199,6 @@ class Field(object):
 				return self.variants[str(value).lower()]
 			return None	# Return nothing. Maybe clean_FOO will be populating this value.
 				
-		elif isinstance(self.master,BooleanField) or isinstance(self.master,NullBooleanField):
-			r = None
-			if value:
-				value = '%s' % value
-				if 'no' in value.lower() or '0' in value:
-					return False 
-				if 'yes' in value.lower() or '1' in value:
-					return True
-
-			else:
-				if not isinstance(self.master,NullBooleanField):
-					return self.if_null
-			return r
-
 		elif isinstance(self.master,DecimalField):
 			if not value and not self.master.null:
 				return self.if_null
@@ -214,27 +208,6 @@ class Field(object):
 				if self.max_value and self.max_value < value:
 					return self.max_value
 			return value
-
-		elif isinstance(self.master,DateField) or isinstance(self.master,DateTimeField):
-			r = None
-			if value:
-				value = '%s' % value
-				if not ' ' in value:	# '12/12/2002' probably
-					r = datetime(*strptime(value,'%m/%d/%Y')[0:6])
-				elif len(value.split(" ")) == 2:	# '2001-11-11 00:00:00' probably
-					if '-' in value:
-						r = datetime(*strptime(value,'%Y-%m-%d %H:%M:%S')[0:6])
-					else:
-						r = datetime(*strptime(value,'%Y/%m/%d %H:%M:%S')[0:6])
-				elif len(value.split(" ")) == 3: # '12/12/2001 00:00:00 AM' probably
-					if len(value.split("/")[0]) == 4:
-						r = datetime(*strptime(value,'%Y/%m/%d %I:%M:%S %p')[0:6])
-					else:
-						r = datetime(*strptime(value,'%m/%d/%Y %I:%M:%S %p')[0:6])
-			else:
-				if not self.master.null:
-					r = self.if_null	# This should choke hard if not specified. GOOD!
-			return r 
 
 		elif isinstance(self.master,CharField) or isinstance(self.master,TextField):
 			if value:
