@@ -3,16 +3,16 @@ from datetime import datetime
 from django.contrib.auth.models import User
 from django.forms.models import model_to_dict
 
-import importer
+import django_data_import as importer
 
 from coms.core.consumer import *
 
-from coms.core.base.models import Address
-from coms.core.base.models import UserProfile
-from coms.core.base.models import PhoneType
-from coms.core.base.models import Relationship
+from your_django_app.models import Address
+from your_django_app.models import UserProfile
+from your_django_app.models import PhoneType
+from your_django_app.models import Relationship
 
-from project.dummy.models import *
+from your_django_app.dummy import models as dummymodels
 
 blank_date = datetime(2007,1,20,01,01,01)   # It is very important to use a static date to fill in gaps
 old_date = datetime(1900,11,20,01,01,01)    # Dynamic dates will create duplicate records since get_or_create will always 'create'
@@ -42,13 +42,13 @@ class UserImport(importer.Import):
 
    class Meta:
       master = User
-      slave = OldUsers.objects.all()
+      slave = dummymodels.OldUsers.objects.all()
 
 class UserProfileImport(importer.Import):
-   user = importer.Field('username',fires_import=UserImport,verify_by=('username',))
+   user = importer.Field('username',uses_import=UserImport,verify_by=('username',))
    title = importer.Field('title')
    location = importer.Field('office')
-   supervisor = importer.Field('supervisorid',fires_import=UserImport)
+   supervisor = importer.Field('supervisorid',uses_import=UserImport)
    exempt = importer.Field(None,value=False)
    annual_pto = importer.Field(None,value=0)
 
@@ -62,7 +62,7 @@ class UserProfileImport(importer.Import):
 
    class Meta:
       master = UserProfile
-      slave = OldUsers.objects.all()
+      slave = dummymodels.OldUsers.objects.all()
 
 class AddressImport(importer.Import):
    line_1 = importer.Field('address1',if_null='Unknown')
@@ -84,87 +84,13 @@ class AddressImport(importer.Import):
          return None
       return cleaned_data['line_2']
 
-class EAddressImport(AddressImport):
-   class Meta:
-      master = Address
-      slave = OldAddresses.objects.filter(id__in=OldCustomers.objects.values_list('eaddressid',flat=True).distinct())
-
-class E2AddressImport(AddressImport):
-   class Meta:
-      master = Address
-      slave = OldAddresses.objects.filter(id__in=OldCustomers.objects.values_list('e2addressid',flat=True).distinct())
-
-class CAddressImport(AddressImport):
-   class Meta:
-      master = Address
-      slave = OldAddresses.objects.filter(id__in=OldCustomers.objects.values_list('addressid',flat=True).distinct())
-
-
-class EContactImport(importer.Import):
-   first_name = importer.Field(None)
-   last_name = importer.Field(None)
-
-   def clean_address(self,slave_record,cleaned_data):
-      if hasattr(slave_record,'eaddressid'):
-         pk = slave_record.eaddressid
-      else:
-         pk = slave_record.e2addressid
-
-      if hasattr(slave_record,'econtact'):
-         name_field = slave_record.econtact
-      else:
-         name_field = slave_record.e2contact
-
-      if not name_field:
-         return None 
-
-      if not 'address' in cleaned_data or not cleaned_data['address']:
-         return Address.objects.get_or_create(line_1="Autocreated for missing %s" % pk,city='Tallahassee',state='FL',\
-               zip='00000',phone_primary='999-999-9999',phone_primary_type=PhoneType.objects.get(name='voice'))[0]
-      return cleaned_data['address']
-
-   def clean(self,slave_record,cleaned_data):
-      if hasattr(slave_record,'econtact'):
-         name_field = slave_record.econtact
-      else:
-         name_field = slave_record.e2contact
-
-      if not name_field:
-         return None 
-
-      test_name = name_field.split(' ',1)
-
-      if len(test_name) > 0:
-         cleaned_data['first_name'] = test_name[0]
-         cleaned_data['last_name'] = test_name[1]
-      else:
-         cleaned_data['first_name'] = test_name
-         cleaned_data['last_name'] = 'Unknown' 
-      return cleaned_data
-
-
-class EmergencyContactPrimaryImport(EContactImport):
-   relationship = importer.Field('erel')
-   address = importer.Field('eaddressid',fires_import=EAddressImport)
-   class Meta:
-      master = EmergencyContact
-      slave = OldCustomers.objects.filter(eaddressid__isnull=False)
-
-class EmergencyContactSecondaryImport(EContactImport):
-   address = importer.Field('e2addressid',fires_import=E2AddressImport)
-   relationship = importer.Field('e2rel')
-
-   class Meta:
-      master = EmergencyContact
-      slave = OldCustomers.objects.filter(e2addressid__isnull=False)
-
 class CustomerImport(importer.Import):
-   staff = importer.Field('addedby',fires_import=UserImport,verify_by=('username',))
+   staff = importer.Field('addedby',uses_import=UserImport,verify_by=('username',))
    date_added = importer.Field('timestamp',if_null=old_date)
    file = importer.Field('consumerid')
    first_name = importer.Field('firstname',if_null='Unknown')
    last_name = importer.Field('lastname',if_null='Unknown')
-   address = importer.Field('addressid',fires_import=CAddressImport)
+   address = importer.Field('addressid',uses_import=CAddressImport)
    middle_initial = importer.Field('mi')
    birth_date = importer.Field('birthdate',if_null=blank_date)
    entry_date = importer.Field('entrydate',if_null=blank_date)
@@ -172,8 +98,8 @@ class CustomerImport(importer.Import):
    ssn = importer.Field('ssn',if_null='0000')
    status = importer.Field('status')
    waive_ilp = importer.Field('createilp',if_null=False)
-   emergency_contact_primary = importer.Field(None,fires_import=EmergencyContactPrimaryImport)
-   emergency_contact_secondary = importer.Field(None,fires_import=EmergencyContactSecondaryImport)
+   emergency_contact_primary = importer.Field(None,uses_import=EmergencyContactPrimaryImport)
+   emergency_contact_secondary = importer.Field(None,uses_import=EmergencyContactSecondaryImport)
    disability_primary = importer.Field('disabprimary')
    disability_secondary = importer.Field('disabsecondary')
    language_primary = importer.Field('langprimary')
@@ -192,77 +118,26 @@ class CustomerImport(importer.Import):
          return User.objects.get(username=OldUsers.objects.get(id=slave_record.addedby).username.lower())
       return User.objects.get(username='coms')
 
-   def clean_address(self,slave_record,cleaned_data):
-      pk = slave_record.addressid
-      if not 'address' in cleaned_data or not cleaned_data['address']:
-         return Address.objects.get_or_create(line_1="Autocreated for missing %s" % pk,city='Tallahassee',state='FL',\
-               zip='00000',phone_primary='999-999-9999',phone_primary_type=PhoneType.objects.get(name='voice'))[0]
-      same_address = Customer.objects.filter(address=cleaned_data['address']).exclude(first_name=cleaned_data['first_name'],last_name=cleaned_data['last_name'])
-      if same_address.count():
-         cleaned_data['address'].pk = None
-         cleaned_data['address'].save()
-      return cleaned_data['address']
-
    def post_save(self,slave_record,master_record):
       if slave_record.householdtype == 'Female head of household':
          CustomerTag.objects.get_or_create(consumer=master_record,type=Tag.objects.get_or_create(name="Female head of household")[0])
 
    class Meta:
       master = Customer 
-      slave = OldCustomers.objects.all()
-
-class GoalImport(importer.Import):
-   start_date = importer.Field('startdate')
-   type = importer.Field('goal')
-   notes = importer.Field('description',if_null='')
-   consumer = importer.Field('consumerid',fires_import=CustomerImport,verify_by=('file','consumerid'))
-   target_date = importer.Field('targetdate',if_null=blank_date)
-   status = importer.Field('status')
-   resolution_date = importer.Field('statusdate')
-   date_added = importer.Field('timestamp')
-   staff = importer.Field('addedby',fires_import=UserImport,verify_by=('username',))
-   def clean_staff(self,slave_record,cleaned_data):
-      if not cleaned_data['staff'] or not OldUsers.objects.filter(pk=slave_record.addedby).count():
-         return User.objects.get(username='COMS')
-      return cleaned_data['staff']
-
-   class Meta:
-      master = Goal 
-      slave = CustomerGoals.objects.all()
-
-class ServiceImport(importer.Import):
-   start_date = importer.Field('startdate',if_null=old_date)
-   type = importer.Field('service')
-   notes = importer.Field('description',if_null='')
-   target_date = importer.Field('targetdate',if_null=blank_date)
-   status = importer.Field('status')
-   resolution_date = importer.Field('statusdate')
-   goal = importer.Field('goalid',fires_import=GoalImport)
-   date_added = importer.Field('timestamp')
-   staff = importer.Field('addedby',fires_import=UserImport,verify_by=('username',))
-
-   def clean_staff(self,slave_record,cleaned_data):
-      if not cleaned_data['staff'] or not OldUsers.objects.filter(pk=slave_record.addedby).count():
-         return User.objects.get(username='COMS')
-      return cleaned_data['staff']
-
-   class Meta:
-      master = Service
-      slave = CustomerServices.objects.all()
+      slave = dummymodels.OldCustomers.objects.all()
 
 class CustomerContactImport(importer.Import):
    date = importer.Field('contactdate',if_null=old_date)
    notes = importer.Field('comments',if_null='')
-   consumer = importer.Field('consumerid',fires_import=CustomerImport,verify_by=('file','consumerid'))
+   consumer = importer.Field('consumerid',uses_import=CustomerImport,verify_by=('file','consumerid'))
    program = importer.Field('program')
    hours = importer.Field('hours',if_null=0)
-   staff = importer.Field('addedby',fires_import=UserImport,verify_by=('username',))
-   service = importer.Field('service',fires_import=ServiceImport)
+   staff = importer.Field('addedby',uses_import=UserImport,verify_by=('username',))
    group = importer.Field('groupname')
    date_added = importer.Field('timestamp')
    def clean_staff(self,slave_record,cleaned_data):
       if not cleaned_data['staff'] or not OldUsers.objects.filter(pk=slave_record.addedby).count():
-         return User.objects.get(username='COMS')
+         return User.objects.get(username='DefaultUser')
       return cleaned_data['staff']
    
    def clean(self,slave_record,cleaned_data):
@@ -279,4 +154,4 @@ class CustomerContactImport(importer.Import):
 
    class Meta:
       master = Contact
-      slave = CustomerContacts.objects.all()
+      slave = dummymodels.CustomerContacts.objects.all()
