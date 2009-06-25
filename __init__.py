@@ -1,4 +1,5 @@
 import pdb
+import re
 from decimal import Decimal
 from time import sleep
 
@@ -42,6 +43,7 @@ class Field(object):
 	def __init__(self,slave_field_name,uses_import=None,max_length=None,max_value=None,if_null=None, value=None,verify_by=None,map=None,clean_function=None):
 		if clean_function:
 			self.custom_clean_function=clean_function
+
 		self.map = map
 		self.test = False 
 		self.max_length = max_length
@@ -50,7 +52,6 @@ class Field(object):
 		self.slave_field_name = slave_field_name
 		self.max_value = max_value
 		self.if_null = if_null
-		self.variants = None
 		self.importation = uses_import 
 
 		self.creation_counter = Field.creation_counter
@@ -69,43 +70,68 @@ class Field(object):
 			if isinstance(self.master,ForeignKey) or isinstance(self.master,OneToOneField):
 				if self.importation:
 					unique = False
-					self.importation = self.importation()
+					self.importation = self.importation(parent=self)
 					
 					if isinstance(self.master,OneToOneField):
 						unique = True
 
 					" Recursion ahoy!! "
-
 					self.importation.do_import(unique=unique,verify_by=self.verify_by) 
-
-					" This next line is an important linkage to make sure we don't collect variants twice "
-
-					self.variants = self.importation.dataset
+					self._global_variants(self.master.rel.to).update(self.importation.dataset)
 				else:
-					prefilled_variants = {} 
-					#if self.master_field_name in self.parent.field_variants.keys():
-						#print "%s using variants from %s, finding %s" % (self.master_field_name, self.parent, len(self.parent.field_variants))
-						#prefilled_variants = self.parent.field_variants[self.master_field_name]
 
-					self.variants = self._collect_variants(prefilled_variants)
-					#self.parent.field_variants[self.master_field_name] = self.variants
+					self._update_global_variants()
 
-	def _collect_variants(self,prefilled_variants):
+	def _alpha_importation(self): # returns top importation fired
+		current_level = self 
+		while True:
+			if hasattr(current_level,'parent') and current_level.parent:
+				current_level = current_level.parent
+			else:
+				if not hasattr(current_level,'master_variants'):
+					current_level.master_variants = {}
+
+				return current_level
+	
+	def _global_variants(self,model_class):
+		alpha = self._alpha_importation()
+		# Go to first importation and look for master variants of a particular class
+		if not model_class.__name__ in alpha.master_variants:
+			alpha.master_variants[model_class.__name__] = {}
+
+		return alpha.master_variants[model_class.__name__]
+
+	def _update_global_variants(self):
 		variants = {}
-		#variants.update(prefilled_variants)
-		#print "Prefilled: %s" % prefilled_variants
+		variants.update(self._global_variants(self.master.rel.to))
 		#This runs through the values for all of its possible slave
 		#values, prompting you to associate each as 'variants' to the master field.
-
 		#When this is done the conversion will loop through uninterrupted
 
+		# Check the initial import for a master variant dict
 		# Use whole queryset here because clean_FOO override might need other fields in old QS.
 		slave_iterable = self.parent.Meta.queryset.order_by(self.slave_field_name) 
 		if not hasattr(self.parent, 'clean_%s' % self.master_field_name):  
-			" clean_FOO attributes need the whole record, not just one field's value. "
+			"Since clean_FOO may the whole record, not just one field's value.. get it"
 			slave_iterable = slave_iterable.values_list(self.slave_field_name,flat=True).distinct()	
 
-		print "Gathering variants for %s (%s total) | %s" % (self.master_field_name,len(slave_iterable),self.parent)
+		if self.map:
+			# If a map returns an appropriate object, use it!
+			for v in slave_iterable:
+				if v and not str(v).lower() in variants and \
+						isinstance(self.map[v],self.master.__class__):
+					variants[str(v).lower()] = self.map[v]
+
+		if hasattr(self,'custom_clean_function'):
+			# If a custom clean function returns an appropriate object
+			# then go ahead and use that.
+			for v in slave_iterable:
+				if v and not str(v).lower() in variants and \
+						isinstance(self.custom_clean_function(v),self.master.rel.to):
+					variants[str(v).lower()] = self.custom_clean_function(v)
+
+		print "Gathering variants for %s (%s total) | %s" % \
+				(self.master_field_name,len(slave_iterable),self.parent)
 
 		associations = list(self.master.rel.to.objects.all())
 		self._show_assoc_options(associations)
@@ -116,7 +142,9 @@ class Field(object):
 			v = str(v).lower()
 			if not v in variants:
 				variants[v], associations = self._record_associate(v,associations)
-		return variants
+
+		# Now update the global variants
+		self._global_variants(self.master.rel.to).update(variants)
 
 	def _show_assoc_options(self,associations):
 		if not self.test:
@@ -126,12 +154,12 @@ class Field(object):
 				count += 1
 
 	def _record_associate(self,slave_value,associations):
-		if not self.master.rel.to.objects.all().count():
+		if not self.master.rel.to.objects.count():
 			return self._record_create(slave_value), associations # There's nothing to pick from. Create one!
 
 		while True:
 			if self.test and associations:
-				return associations[0], assocations
+				return associations[0], associations
 			else:	# or let the user pick from the PK list already given.
 				input = raw_input("Which above %s to associate with value '%s'? 'LIST' | 'NEW' | <Enter> for None:\t" % (self.master_field_name,slave_value))
 
@@ -163,7 +191,7 @@ class Field(object):
 						try: #In case their input is no good.
 							input = raw_input("Value for field '%s'? (value or 'SKIP','RETRY'):\t" % field.name)
 							if input == 'SKIP':
-								return None
+								return
 							elif input == 'RETRY':
 								return self._record_create(value)
 							new_model[field.name] = input 
@@ -176,7 +204,7 @@ class Field(object):
 				return new_object
 			except ValueError:
 				print "Object failed to create. Please fix these keys and continue:\t%s" % new_model
-				pdb.set_trace()
+				import pdb;pdb.set_trace()
 				return self.master.rel.to.objects.get_or_create(**new_model)[0]
 
 	def clean(self,value):
@@ -203,8 +231,8 @@ class Field(object):
 			"""
 			Some core prep work for FKs. Use the variant already provided by user.
 			"""
-			if str(value).lower() in self.variants.keys(): 
-				return self.variants[str(value).lower()]
+			if str(value).lower() in self._global_variants(self.master.rel.to).keys(): 
+				return self._global_variants(self.master.rel.to)[str(value).lower()]
 				
 		elif isinstance(self.master,DecimalField):
 			"""
@@ -268,9 +296,12 @@ class DeclarativeFieldsMetaclass(type):
         return new_class
 
 class BaseImport(object):
-	def __init__(self,override_values=None, queryset=None, verbose=False,slave=False,verify_by=None):
-		print "init %s" % self
+	def __init__(self,override_values=None, queryset=None, verbose=False,slave=False,verify_by=None,parent=None,variants=None):
+		print "init %s" % self.__class__.__name__
+		if variants:
+			self.master_variants=variants
 		self.field_variants = {} 
+		self.parent = parent
 		if slave:
 			self.Meta.slave = slave
 
@@ -280,11 +311,12 @@ class BaseImport(object):
 		self.verbose = verbose
 		self.Meta.queryset = queryset
 		self.override_values = override_values or {}
-		self.totals = {'created' : 0, 'processed': 0 }	# General numbers on the work done in this instance. 
+		self.created = []	# General numbers on the work done in this instance. 
 
 		" Now let's make sure all req'd fields have been specified "
 		for i in self.Meta.master._meta.local_fields:
-			if not i.name == "id" and not i.name in self.get_all_master_field_names() and not self.Meta.master._meta.get_field(i.name).null:
+			if not i.name == "id" and not i.name in [field for field in self.fields] \
+					and not self.Meta.master._meta.get_field(i.name).null:
 				print "Warning! Field '%s' in model %s is not-nullable! You didn't specify it in fields! Better take care of it in clean()!" % (i.name,self.Meta.master._meta.db_table)
 
 		if isinstance(self.Meta.slave,QuerySet):
@@ -298,18 +330,11 @@ class BaseImport(object):
 		for i in self.fields:
 			self.fields[i].prep_work(i,self)
 
-	def get_all_master_field_names(self):
-		master_names = []
-		for i in self.fields:
-			master_names.append(i)
-		return master_names
-
 	def do_import(self,verify_by=None,unique=False):
-		print "Importation: %s" % self
+		print "Importation: %s" % self.__class__.__name__
 		for slave_record in self.Meta.queryset:
 			new_model = None
-			self.totals['processed'] += 1
-			if verify_by:
+			if verify_by: #Won't fire without imported data
 				new_model = self._soft_import(slave_record,verify_by)
 
 			if not new_model:
@@ -317,15 +342,17 @@ class BaseImport(object):
 
 			self.dataset[str(slave_record.pk)] = new_model
 
-			if hasattr(self,'post_save'):
+			if new_model and hasattr(self,'post_save'):
 				self.post_save(slave_record,new_model)
 
-		print "%s" % self.totals
+		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),len(self.created))
+		print "Here's a shell to inspect what was created, or not"
+		import pdb;pdb.set_trace()
+		self.created = None
 
 	def _soft_import(self,slave_record,verify_by):
-		"Used to match a table only by one field"
-
-		"Keep in mind this *NEVER* works the first time through the slave table. Why? Can't soft-match on nothing!"
+		#Used to match a table only by one field
+		#Obviously this *NEVER* fires unless imported data exists
 
 		m_field = verify_by[0]
 
@@ -343,59 +370,127 @@ class BaseImport(object):
 			return None
 
 	def _hard_import(self,slave_record,unique):
-		"Regular import. Matches two tables by all fields."
+		#Regular import. Matches two tables by all fields.
 		cleaned_data = {}
 		for k, field in self.fields.iteritems():
-			# ManyToMany isn't going to be done at this point.
-			#if isinstance(field,ManyToManyField):
-			#	continue
-
 			value = None
-			if field.slave_field_name: # There may be no slave field (didn't exist in old table) 
+			if field.slave_field_name: # Field may not exist in slave table 
 				value = getattr(slave_record,field.slave_field_name)
 
 			if value in self.override_values.keys():
-				cleaned_data[k] = self.override_values[k]
+				value = self.override_values[k]
 			else:
-				cleaned_data[k] = self.fields[k].clean(value)
+				value = self.fields[k].clean(value)
+
+			cleaned_data[k] = value
 
 			if hasattr(self, 'clean_%s' % k): # use custom clean_FOO override
 				cleaned_data[k] = getattr(self,'clean_%s' % k)(slave_record,cleaned_data)
+
 
 		if hasattr(self,'clean'):
 			cleaned_data = self.clean(slave_record,cleaned_data)
 
 		if not cleaned_data: # There was nothing to create!
-			return None
+			return
 
+		return self._hard_import_commit(cleaned_data,unique)
+
+	def _hard_import_commit(self,cleaned_data,unique):
 		try:
 			new_model, created = self.Meta.master.objects.get_or_create(**cleaned_data)
 			if created:
-				self.totals['created'] += 1
+				self.created.append(new_model) 
 			return new_model
+
 		except self.Meta.master.MultipleObjectsReturned:
 			"""
-			We've already gone through the importation once and want to avoid re-creating records.
-			However, two imported models turned out to be exactly the same. Because A OneToOneField may have
-			been involved, we must somehow respect the existance of two identical models and reliably match
-			them up after all is said and done.
+			When re-running, we want to avoid re-creating records.
+			However, here, two imported models turned out identical. 
+			Because other records may OneToOne to this one, we must
+			somehow respect the existance of two identical models 
+			and reliably match up OneToOnes after all is said and done.
 
-			For now we use the first of a QuerySet of those models, excluding those that have already been used!
+			For now we use the first of a QuerySet of those models, 
+			excluding those that have already been used!
 
-			Potential bug here is if many different models OneToOne with this model. In this case, its liable to
-			pick up one of the other model's OneToOne relationships.
+			Potential bug here is if many different models OneToOne 
+			with this model. In this case, its liable to pick up one 
+			of the other model's OneToOne relationships.
+
+			Oh, and by the way, as of 6/23/09 I have no idea how, why,
+			or what this is supposed to accomplish.
 			"""
 			if not unique:
 				raise self.Meta.master.MultipleObjectsReturned
-			pks_so_far = []
-			for i in self.dataset:
-				pks_so_far.append(self.dataset[i].pk)
-			return self.Meta.master.objects.exclude(pk__in=pks_so_far)[0]
-		except:
-			print '==ERR0R=ADDING=MODEL=======(Probably your fault)==========='
-			print '%s' % cleaned_data
-			print '===========You\'re in shell! Find out why!================='
-			pdb.set_trace()
+
+			pks_so_far = [i.pk for i in self.dataset.values()]
+
+			# Excluding records already created this run, we return the next in line.
+			try: # Get the next unclaimed copy
+				return self.Meta.master.objects.exclude(pk__in=pks_so_far).filter(**cleaned_data)[0]
+			except: # No unclaimed copies exist. Create a new one!
+				return self.Meta.master.objects.create(**cleaned_data)
+
+		except IntegrityError, e: 
+			# Hate this next line. Probably MySQL only. Sorry!
+			try:
+				match = re.search("Duplicate entry '(\d+)'",e.args[1])
+				errant_pk = int(match.groups(0)[0])
+			except:
+				import pdb;pdb.runcall(self._escape,cleaned_data,e)
+
+
+			# While lots of things can cause dupes, we're only here to fix OneToOne
+			one_to_one_fields = [f for f in self.Meta.master._meta.fields \
+					if isinstance(f,OneToOneField)]
+
+			culprit = []
+
+			# Grab that unlikely sucker
+			for d in cleaned_data:
+				for f in one_to_one_fields:
+					if d == f.verbose_name and cleaned_data[d].pk == errant_pk:
+						culprit.append((d,f))
+
+			if len(culprit) != 1:
+				import pdb;pdb.set_trace()
+				raise Exception("Hell appears to have frozen over")
+
+			errant_model, errant_field = culprit[0]
+
+			try:
+				pks_so_far = [i.pk for i in self.dataset.values()]
+			except:
+				import pdb;pdb.set_trace()
+
+			cleaned_data_nodupes = cleaned_data.copy()
+
+			del cleaned_data_nodupes[errant_field.verbose_name]
+			# First, let's see if this model has already been imported and has its own correct errant model
+			if self.Meta.master.objects.filter(**cleaned_data_nodupes).exclude(pk__in=pks_so_far).count() == 1:
+				correct_dupe = getattr(self.Meta.master.objects.exclude(pk__in=pks_so_far).get(**cleaned_data_nodupes),f.verbose_name)
+				cleaned_data[f.verbose_name] = correct_dupe
+				# Recurse. Maybe there's other issues to solve.
+				return self._hard_import_commit(cleaned_data,unique)
+
+			# Ahh, ok. We clearly just need a new copy of the errant model
+			cleaned_data[errant_field.verbose_name].pk = None
+			cleaned_data[errant_field.verbose_name].save()
+
+			# Recurse. Maybe there's other issues to solve.
+			return self._hard_import_commit(cleaned_data,unique)
+
+		except Exception, e:
+			import pdb;pdb.runcall(self._escape,cleaned_data,e)
+
+	def _escape(self,cleaned_data,e):
+		print '==ERR0R=ADDING=MODEL=======(Probably your fault)==========='
+		print e
+		print '==Data that failed:'
+
+		print '%s' % cleaned_data
+		print '===========You\'re in shell! Find out why!================='
 	
 class Import(BaseImport):
 	__metaclass__ = DeclarativeFieldsMetaclass
