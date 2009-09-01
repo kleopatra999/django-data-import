@@ -1,18 +1,12 @@
 import pdb
 import re
 from decimal import Decimal
-from time import sleep
 
 from django.utils.datastructures import SortedDict
 from django.utils.encoding import smart_unicode
 from django.db import IntegrityError
 
-from django.db.models.fields import BooleanField 
-from django.db.models.fields import NullBooleanField 
-from django.db.models.fields import IntegerField 
 from django.db.models.fields import DecimalField 
-from django.db.models.fields import DateTimeField 
-from django.db.models.fields import DateField 
 from django.db.models.fields import CharField 
 from django.db.models.fields import TextField 
 from django.db.models import ForeignKey 
@@ -229,8 +223,8 @@ class Field(object):
 			"""
 			Map was given, a la importer.Field('x',map={'0': False,'1': True}) 
 			"""
-			if value in self.map.keys():
-				value = self.map[value]
+			if str(value) in self.map.keys():
+				value = self.map[str(value)]
 
 		if hasattr(self,'custom_clean_function'):
 			"""
@@ -346,7 +340,7 @@ class BaseImport(object):
 		self.verbose = verbose
 		self.Meta.queryset = queryset
 		self.override_values = override_values or {}
-		self.created = []	# General numbers on the work done in this instance. 
+		self.created = 0	# General numbers on the work done in this instance. 
 
 		" Now let's make sure all req'd fields have been specified "
 		warnings = []
@@ -388,10 +382,10 @@ class BaseImport(object):
 			if new_model and hasattr(self,'post_save'):
 				self.post_save(slave_record,new_model)
 
-		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),len(self.created))
+		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created)
 		#print "Here's a shell to inspect what was created, or not"
 		#import pdb;pdb.set_trace()
-		self.created = None
+		self.created = 0 
 
 	def _soft_import(self,slave_record,verify_by):
 		#Used to match a table only by one field
@@ -457,7 +451,7 @@ class BaseImport(object):
 		try:
 			new_model, created = self.Meta.master.objects.get_or_create(**cleaned_data)
 			if created:
-				self.created.append(new_model) 
+				self.created += 1
 			return new_model
 
 		except self.Meta.master.MultipleObjectsReturned:
