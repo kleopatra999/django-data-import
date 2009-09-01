@@ -418,16 +418,8 @@ class BaseImport(object):
 				""" 
 				To conserve memory, related importations (uses_import=OtherImport) store
 				only the pk created. Here we must update our cleaned_data to reflect this
-
-				Trying with additional hits to db for now. 
 				"""
-				try:
-					value = field.master.rel.to.objects.get(pk=value)
-				except field.master.rel.to.DoesNotExist:
-					"""
-					In this case the slave model's linkage was errant and the user needs to handle it
-					"""
-					pass
+				value = field.master.rel.to.objects.get(pk=value)
 
 			if value in self.override_values.keys():
 				value = self.override_values[k]
