@@ -5,5 +5,5 @@ os.environ['DJANGO_SETTINGS_MODULE'] = 'project.settings'
 
 from project.dummy.migrations import * 
 
-x = UserImport	# Conducts prep work
+x = CustomerImport	# Conducts prep work
 x.import()	# Performs the mirroring from old to new db
