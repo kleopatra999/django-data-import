@@ -23,7 +23,8 @@ from django.db.models.query import QuerySet
 class ValidationError(Exception):
     "(Almost straight copy from django.forms)"
     def __init__(self, message):
-        " ValidationError can be passed any object that can be printed (usually a string) or a list of objects. "
+        # ValidationError can be passed any object that can 
+	# be printed (usually a string) or a list of objects. "
         if isinstance(message, list):
             self.messages = ([smart_unicode(msg) for msg in message])
         else:
@@ -40,13 +41,20 @@ class ValidationError(Exception):
 class Field(object):
 	" Derived from django.forms.Field "
 	creation_counter = 0
-	def __init__(self,slave_field_name,uses_import=None,max_length=None,max_value=None,if_null=None, value=None,verify_by=None,map=None,clean_function=None):
+	def __init__(self,slave_field_name,uses_import=None,prompt=False,\
+			max_length=None,max_value=None,if_null=None, value=None,\
+			verify_by=None,map=None,clean_function=None):
+
 		if clean_function:
 			self.custom_clean_function=clean_function
+
+		if value and prompt:
+			raise "Makes no sense to specify 'value' and then ask for prompt"
 
 		self.map = map
 		self.test = False 
 		self.max_length = max_length
+		self.prompt = prompt
 		self.verify_by = verify_by or []
 		self.value = value
 		self.slave_field_name = slave_field_name
@@ -77,10 +85,9 @@ class Field(object):
 
 					" Recursion ahoy!! "
 					self.importation.do_import(unique=unique,verify_by=self.verify_by) 
-					self._global_variants(self.master.rel.to).update(self.importation.dataset)
+					self._get_variants_for_model(self.master.rel.to).update(self.importation.dataset)
 				else:
-
-					self._update_global_variants()
+					self._update_get_variants_for_model()
 
 	def _alpha_importation(self): # returns top importation fired
 		current_level = self 
@@ -93,7 +100,7 @@ class Field(object):
 
 				return current_level
 	
-	def _global_variants(self,model_class):
+	def _get_variants_for_model(self,model_class):
 		alpha = self._alpha_importation()
 		# Go to first importation and look for master variants of a particular class
 		if not model_class.__name__ in alpha.master_variants:
@@ -101,9 +108,9 @@ class Field(object):
 
 		return alpha.master_variants[model_class.__name__]
 
-	def _update_global_variants(self):
+	def _update_get_variants_for_model(self):
 		variants = {}
-		variants.update(self._global_variants(self.master.rel.to))
+		variants.update(self._get_variants_for_model(self.master.rel.to))
 		#This runs through the values for all of its possible slave
 		#values, prompting you to associate each as 'variants' to the master field.
 		#When this is done the conversion will loop through uninterrupted
@@ -130,7 +137,7 @@ class Field(object):
 						isinstance(self.custom_clean_function(v),self.master.rel.to):
 					variants[str(v).lower()] = self.custom_clean_function(v)
 
-		print "Gathering variants for %s (%s total) | %s" % \
+		print "Gathering variants for field '%s' (%s total) | %s" % \
 				(self.master_field_name,len(slave_iterable),self.parent)
 
 		associations = list(self.master.rel.to.objects.all())
@@ -141,10 +148,10 @@ class Field(object):
 				v = getattr(self.parent,'clean_%s' % self.master_field_name)(v,None)
 			v = str(v).lower()
 			if not v in variants:
-				variants[v], associations = self._record_associate(v,associations)
+				variants[v], associations = self._manual_associate(v,associations)
 
 		# Now update the global variants
-		self._global_variants(self.master.rel.to).update(variants)
+		self._get_variants_for_model(self.master.rel.to).update(variants)
 
 	def _show_assoc_options(self,associations):
 		if not self.test:
@@ -153,15 +160,18 @@ class Field(object):
 				print "[%s] %s" % (count, i)
 				count += 1
 
-	def _record_associate(self,slave_value,associations):
+	def _manual_associate(self,slave_value,associations):
 		if not self.master.rel.to.objects.count():
-			return self._record_create(slave_value), associations # There's nothing to pick from. Create one!
+			return self._manual_create(slave_value), associations 
+			# There's nothing to pick from. Create one!
 
 		while True:
 			if self.test and associations:
 				return associations[0], associations
 			else:	# or let the user pick from the PK list already given.
-				input = raw_input("Which above %s to associate with value '%s'? 'LIST' | 'NEW' | <Enter> for None:\t" % (self.master_field_name,slave_value))
+				input = raw_input("Which above %s to associate with "\
+						"value '%s'? 'LIST' | 'NEW' | <Enter> for None:\t" % \
+						(self.master_field_name,slave_value))
 
 			if input == '':	
 				return None, associations
@@ -169,7 +179,7 @@ class Field(object):
 				self._show_assoc_options(associations)
 				continue
 			elif input == 'NEW':
-				new_record = self._record_create(slave_value)
+				new_record = self._manual_create(slave_value)
 				associations = list(self.master.rel.to.objects.all())
 				return new_record, associations
 			try:
@@ -179,7 +189,7 @@ class Field(object):
 			except ValueError:
 				print "You fail. Retry."
 	
-	def _record_create(self,value):
+	def _manual_create(self,value):
 		print "Creating new [%s] for old value:\t%s" % (self.master_field_name,value) 
 		new_model = {}
 		if value == None:
@@ -189,11 +199,12 @@ class Field(object):
 				if not field.name in ['pk','id']:
 					while True:
 						try: #In case their input is no good.
-							input = raw_input("Value for field '%s'? (value or 'SKIP','RETRY'):\t" % field.name)
+							input = raw_input("Value for field '%s'? "\
+									"(value or 'SKIP','RETRY'):\t" % field.name)
 							if input == 'SKIP':
 								return
 							elif input == 'RETRY':
-								return self._record_create(value)
+								return self._manual_create(value)
 							new_model[field.name] = input 
 							break
 						except ValueError:
@@ -231,8 +242,10 @@ class Field(object):
 			"""
 			Some core prep work for FKs. Use the variant already provided by user.
 			"""
-			if str(value).lower() in self._global_variants(self.master.rel.to).keys(): 
-				return self._global_variants(self.master.rel.to)[str(value).lower()]
+			try:
+				return self._get_variants_for_model(self.master.rel.to)[str(value).lower()]
+			except KeyError:
+				pass
 				
 		elif isinstance(self.master,DecimalField):
 			"""
@@ -248,7 +261,20 @@ class Field(object):
 			Do some quick and dirty char encoding to make sure source data wasn't junky
 			"""
 			if value:
-				value = '%s' % value.encode('ascii','ignore')
+				value = str(value).encode('ascii','ignore')
+				if self.prompt:
+					prompted_value = False
+					while prompted_value == False:
+						raw_value = raw_input("Prompting for %s ('%s'):" % \
+								(self.master_field_name,value)).rstrip()
+						if raw_value == '':
+							prompted_value = None
+
+						else:
+							prompted_value = raw_value
+
+					return prompted_value
+
 				if getattr(self.master,'max_length',False) and len(value) > self.master.max_length:
 					return '%s' % value[:self.master.max_length]
 
@@ -296,8 +322,17 @@ class DeclarativeFieldsMetaclass(type):
         return new_class
 
 class BaseImport(object):
-	def __init__(self,override_values=None, queryset=None, verbose=False,slave=False,verify_by=None,parent=None,variants=None):
-		print "init %s" % self.__class__.__name__
+	def __init__(self,override_values=None, queryset=None,\
+			verbose=False,slave=False,verify_by=None,\
+			parent=None,variants=None):
+
+		try:
+			self.Meta.master._meta
+		except AttributeError:
+			from django.db.models import get_model
+			self.Meta.master = get_model(*self.Meta.master.split('.'))
+
+		print "Initializing conversion: %s" % self.__class__.__name__
 		if variants:
 			self.master_variants=variants
 		self.field_variants = {} 
@@ -314,10 +349,15 @@ class BaseImport(object):
 		self.created = []	# General numbers on the work done in this instance. 
 
 		" Now let's make sure all req'd fields have been specified "
+		warnings = []
 		for i in self.Meta.master._meta.local_fields:
 			if not i.name == "id" and not i.name in [field for field in self.fields] \
 					and not self.Meta.master._meta.get_field(i.name).null:
-				print "Warning! Field '%s' in model %s is not-nullable! You didn't specify it in fields! Better take care of it in clean()!" % (i.name,self.Meta.master._meta.db_table)
+				warnings.append(i.name)
+
+		if warnings:
+			print "Warning! Field(s) [%s] in master model [%s] are not nullable, but you didn't specify them."\
+					" Ignore if these are taken care of in clean() or have a default" % (",".join(warnings),self.Meta.master._meta.db_table)
 
 		if isinstance(self.Meta.slave,QuerySet):
 			if not getattr(self.Meta,'queryset',None):
@@ -326,13 +366,16 @@ class BaseImport(object):
 		else:
 			if not getattr(self.Meta,'queryset',None):
 				self.Meta.queryset = self.Meta.slave.objects.all()
-		
+
 		for i in self.fields:
 			self.fields[i].prep_work(i,self)
 
+		#if not parent:
+		#	self.do_import()
+
 	def do_import(self,verify_by=None,unique=False):
-		print "Importation: %s" % self.__class__.__name__
-		for slave_record in self.Meta.queryset:
+		print "Importing %s" % self.__class__.__name__
+		for count, slave_record in enumerate(self.Meta.queryset):
 			new_model = None
 			if verify_by: #Won't fire without imported data
 				new_model = self._soft_import(slave_record,verify_by)
@@ -340,14 +383,14 @@ class BaseImport(object):
 			if not new_model:
 				new_model = self._hard_import(slave_record,unique)
 
-			self.dataset[str(slave_record.pk)] = new_model
-
+			self.dataset[str(slave_record.pk)] = new_model.pk
+			
 			if new_model and hasattr(self,'post_save'):
 				self.post_save(slave_record,new_model)
 
 		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),len(self.created))
-		print "Here's a shell to inspect what was created, or not"
-		import pdb;pdb.set_trace()
+		#print "Here's a shell to inspect what was created, or not"
+		#import pdb;pdb.set_trace()
 		self.created = None
 
 	def _soft_import(self,slave_record,verify_by):
@@ -356,18 +399,18 @@ class BaseImport(object):
 
 		m_field = verify_by[0]
 
-		if len(verify_by) == 1:
-			s_field = verify_by[0]
-		else:
-			s_field = verify_by[1]
+		try:
+			s_field = verify_by[1] # Tuple, (m,s)
+			raise
+		except:
+			s_field = m_field # One field name for both 
 		
-		ver_filter = {}
-		ver_filter[m_field] = getattr(slave_record,s_field)
+		verify_kwarg = {m_field: getattr(slave_record,s_field)}
 
 		try:
-			return self.Meta.master.objects.get(**ver_filter)
+			return self.Meta.master.objects.get(**verify_kwarg)
 		except self.Meta.master.DoesNotExist:
-			return None
+			return
 
 	def _hard_import(self,slave_record,unique):
 		#Regular import. Matches two tables by all fields.
@@ -376,6 +419,21 @@ class BaseImport(object):
 			value = None
 			if field.slave_field_name: # Field may not exist in slave table 
 				value = getattr(slave_record,field.slave_field_name)
+
+			if field.importation:
+				""" 
+				To conserve memory, related importations (uses_import=OtherImport) store
+				only the pk created. Here we must update our cleaned_data to reflect this
+
+				Trying with additional hits to db for now. 
+				"""
+				try:
+					value = field.master.rel.to.objects.get(pk=value)
+				except field.master.rel.to.DoesNotExist:
+					"""
+					In this case the slave model's linkage was errant and the user needs to handle it
+					"""
+					pass
 
 			if value in self.override_values.keys():
 				value = self.override_values[k]
@@ -386,7 +444,6 @@ class BaseImport(object):
 
 			if hasattr(self, 'clean_%s' % k): # use custom clean_FOO override
 				cleaned_data[k] = getattr(self,'clean_%s' % k)(slave_record,cleaned_data)
-
 
 		if hasattr(self,'clean'):
 			cleaned_data = self.clean(slave_record,cleaned_data)
@@ -414,24 +471,19 @@ class BaseImport(object):
 			For now we use the first of a QuerySet of those models, 
 			excluding those that have already been used!
 
-			Potential bug here is if many different models OneToOne 
-			with this model. In this case, its liable to pick up one 
-			of the other model's OneToOne relationships.
-
-			Oh, and by the way, as of 6/23/09 I have no idea how, why,
-			or what this is supposed to accomplish.
+			If other models OneToOne with this one, you will need
+			to script around the fact that many records of different
+			models will end up pointing to this one.
 			"""
 			if not unique:
 				raise self.Meta.master.MultipleObjectsReturned
 
-			pks_so_far = [i.pk for i in self.dataset.values()]
-
 			# Excluding records already created this run, we return the next in line.
 			try: # Get the next unclaimed copy
-				return self.Meta.master.objects.exclude(pk__in=pks_so_far).filter(**cleaned_data)[0]
+				return self.Meta.master.objects.exclude(pk__in=self.dataset.values()).filter(**cleaned_data)[0]
 			except: # No unclaimed copies exist. Create a new one!
 				return self.Meta.master.objects.create(**cleaned_data)
-
+	
 		except IntegrityError, e: 
 			# Hate this next line. Probably MySQL only. Sorry!
 			try:
@@ -439,7 +491,6 @@ class BaseImport(object):
 				errant_pk = int(match.groups(0)[0])
 			except:
 				import pdb;pdb.runcall(self._escape,cleaned_data,e)
-
 
 			# While lots of things can cause dupes, we're only here to fix OneToOne
 			one_to_one_fields = [f for f in self.Meta.master._meta.fields \
@@ -459,20 +510,25 @@ class BaseImport(object):
 
 			errant_model, errant_field = culprit[0]
 
-			try:
-				pks_so_far = [i.pk for i in self.dataset.values()]
-			except:
-				import pdb;pdb.set_trace()
-
 			cleaned_data_nodupes = cleaned_data.copy()
 
 			del cleaned_data_nodupes[errant_field.verbose_name]
 			# First, let's see if this model has already been imported and has its own correct errant model
-			if self.Meta.master.objects.filter(**cleaned_data_nodupes).exclude(pk__in=pks_so_far).count() == 1:
-				correct_dupe = getattr(self.Meta.master.objects.exclude(pk__in=pks_so_far).get(**cleaned_data_nodupes),f.verbose_name)
-				cleaned_data[f.verbose_name] = correct_dupe
-				# Recurse. Maybe there's other issues to solve.
+			try:
+				correct_dupe = self.Meta.master.objects.exclude(pk__in=self.dataset.values()).get(**cleaned_data_nodupes)
+				cleaned_data[f.verbose_name] = getattr(correct_dupe,f.verbose_name)
+				#if self.Meta.master.objects.filter(**cleaned_data_nodupes).exclude(\
+				#		pk__in=self.dataset.values()).count() == 1:
+				#	correct_dupe = getattr(self.Meta.master.objects.exclude(\
+				#			pk__in=self.dataset.values()).get(**cleaned_data_nodupes),f.verbose_name)
+				#	cleaned_data[f.verbose_name] = correct_dupe
+				#	# Recurse. Maybe there's other issues to solve.
+				#	return self._hard_import_commit(cleaned_data,unique)
+			#
 				return self._hard_import_commit(cleaned_data,unique)
+
+			except:
+				pass
 
 			# Ahh, ok. We clearly just need a new copy of the errant model
 			cleaned_data[errant_field.verbose_name].pk = None
