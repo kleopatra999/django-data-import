@@ -498,6 +498,8 @@ class BaseImport(ImportBaseClass):
 				logging.debug("Multiple objects returned, grabbing latest unprocessed")
 				return self.Meta.master.objects.get(pk=unprocessed_id)
 
+			import pdb;pdb.set_trace()
+
 			logging.debug("Multiple objects returned; created a new one")
 			return self.Meta.master.objects.create(**cleaned_data)
 	
