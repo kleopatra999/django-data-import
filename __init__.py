@@ -377,9 +377,9 @@ class BaseImport(ImportBaseClass):
 	def do_import(self,verify_by=None,unique=False):
 		print "Importing %s" % self.__class__.__name__
 		paginator = Paginator(self.Meta.queryset,250)
-		for i in range(1,paginator.num_pages):
+		for i in range(0,paginator.num_pages):
 			print "*"
-			for slave_record in paginator.page(i).object_list:
+			for slave_record in paginator.page(i + 1).object_list:
 				sleep(.01) # This seems to yield massive performance improvements.
 				new_model = None
 				if verify_by: #Won't fire without imported data
