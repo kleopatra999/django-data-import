@@ -1,7 +1,10 @@
 import pdb
 import re
+from time import sleep
 from decimal import Decimal
 
+from django.core.paginator import Paginator
+from django.db.models import get_model
 from django.utils.datastructures import SortedDict
 from django.utils.encoding import smart_unicode
 from django.db import IntegrityError
@@ -32,7 +35,27 @@ class ValidationError(Exception):
         # See http://www.python.org/doc/current/tut/node10.html#handling
         return repr(self.messages)
 
-class Field(object):
+class ImportBaseClass(object):
+	def _alpha_importation(self): # returns top importation fired
+		current_level = self 
+		while True:
+			if hasattr(current_level,'parent') and current_level.parent:
+				current_level = current_level.parent
+			else:
+				if not hasattr(current_level,'master_variants'):
+					current_level.master_variants = {}
+
+				return current_level
+	
+	def _get_variants_for_model(self,model_class):
+		alpha = self._alpha_importation()
+		# Go to first importation and look for master variants of a particular class
+		if not model_class.__name__ in alpha.master_variants:
+			alpha.master_variants[model_class.__name__] = {}
+
+		return alpha.master_variants[model_class.__name__]
+
+class Field(ImportBaseClass):
 	" Derived from django.forms.Field "
 	creation_counter = 0
 	def __init__(self,slave_field_name,uses_import=None,prompt=False,\
@@ -79,28 +102,9 @@ class Field(object):
 
 					" Recursion ahoy!! "
 					self.importation.do_import(unique=unique,verify_by=self.verify_by) 
-					self._get_variants_for_model(self.master.rel.to).update(self.importation.dataset)
+					#self._get_variants_for_model(self.master.rel.to).update(self.importation.dataset)
 				else:
 					self._update_get_variants_for_model()
-
-	def _alpha_importation(self): # returns top importation fired
-		current_level = self 
-		while True:
-			if hasattr(current_level,'parent') and current_level.parent:
-				current_level = current_level.parent
-			else:
-				if not hasattr(current_level,'master_variants'):
-					current_level.master_variants = {}
-
-				return current_level
-	
-	def _get_variants_for_model(self,model_class):
-		alpha = self._alpha_importation()
-		# Go to first importation and look for master variants of a particular class
-		if not model_class.__name__ in alpha.master_variants:
-			alpha.master_variants[model_class.__name__] = {}
-
-		return alpha.master_variants[model_class.__name__]
 
 	def _update_get_variants_for_model(self):
 		variants = {}
@@ -111,6 +115,8 @@ class Field(object):
 
 		# Check the initial import for a master variant dict
 		# Use whole queryset here because clean_FOO override might need other fields in old QS.
+		
+		pdb.set_trace() # Need to copy. Can't be eating th whole QS
 		slave_iterable = self.parent.Meta.queryset.order_by(self.slave_field_name) 
 		if not hasattr(self.parent, 'clean_%s' % self.master_field_name):  
 			"Since clean_FOO may the whole record, not just one field's value.. get it"
@@ -134,6 +140,8 @@ class Field(object):
 		print "Gathering variants for field '%s' (%s total) | %s" % \
 				(self.master_field_name,len(slave_iterable),self.parent)
 
+		
+		# May need to redo this so the entire queryset doesn't stay in memory.
 		associations = list(self.master.rel.to.objects.all())
 		self._show_assoc_options(associations)
 
@@ -209,7 +217,7 @@ class Field(object):
 				return new_object
 			except ValueError:
 				print "Object failed to create. Please fix these keys and continue:\t%s" % new_model
-				import pdb;pdb.set_trace()
+				pdb.set_trace()
 				return self.master.rel.to.objects.get_or_create(**new_model)[0]
 
 	def clean(self,value):
@@ -223,7 +231,7 @@ class Field(object):
 			"""
 			Map was given, a la importer.Field('x',map={'0': False,'1': True}) 
 			"""
-			if str(value) in self.map.keys():
+			if str(value) in self.map:
 				value = self.map[str(value)]
 
 		if hasattr(self,'custom_clean_function'):
@@ -315,7 +323,7 @@ class DeclarativeFieldsMetaclass(type):
         new_class = super(DeclarativeFieldsMetaclass,cls).__new__(cls, name, bases, attrs)
         return new_class
 
-class BaseImport(object):
+class BaseImport(ImportBaseClass):
 	def __init__(self,override_values=None, queryset=None,\
 			verbose=False,slave=False,verify_by=None,\
 			parent=None,variants=None):
@@ -323,7 +331,6 @@ class BaseImport(object):
 		try:
 			self.Meta.master._meta
 		except AttributeError:
-			from django.db.models import get_model
 			self.Meta.master = get_model(*self.Meta.master.split('.'))
 
 		print "Initializing conversion: %s" % self.__class__.__name__
@@ -334,7 +341,7 @@ class BaseImport(object):
 		if slave:
 			self.Meta.slave = slave
 
-		self.dataset = {}	# Keeps a dict of items created by. {'slave_key' : master_object }
+		#self.dataset = {}	# Keeps a dict of items created by. {'slave_key' : master_object }
 		self.verify_by = verify_by or []
 		
 		self.verbose = verbose
@@ -364,23 +371,28 @@ class BaseImport(object):
 		for i in self.fields:
 			self.fields[i].prep_work(i,self)
 
-		#if not parent:
-		#	self.do_import()
+		if not parent:
+			self.do_import()
 
 	def do_import(self,verify_by=None,unique=False):
 		print "Importing %s" % self.__class__.__name__
-		for count, slave_record in enumerate(self.Meta.queryset):
-			new_model = None
-			if verify_by: #Won't fire without imported data
-				new_model = self._soft_import(slave_record,verify_by)
+		paginator = Paginator(self.Meta.queryset,250)
+		for i in range(1,paginator.num_pages):
+			print "*"
+			for slave_record in paginator.page(i).object_list:
+				sleep(.01) # This seems to yield massive performance improvements.
+				new_model = None
+				if verify_by: #Won't fire without imported data
+					new_model = self._soft_import(slave_record,verify_by)
 
-			if not new_model:
-				new_model = self._hard_import(slave_record,unique)
+				if not new_model:
+					new_model = self._hard_import(slave_record,unique)
 
-			self.dataset[str(slave_record.pk)] = new_model.pk
-			
-			if new_model and hasattr(self,'post_save'):
-				self.post_save(slave_record,new_model)
+				self._get_variants_for_model(self.Meta.master).update({str(slave_record.pk): new_model.pk})
+				#self.dataset[str(slave_record.pk)] = new_model.pk
+				
+				if new_model and hasattr(self,'post_save'):
+					self.post_save(slave_record,new_model)
 
 		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created)
 		#print "Here's a shell to inspect what was created, or not"
@@ -409,7 +421,7 @@ class BaseImport(object):
 	def _hard_import(self,slave_record,unique):
 		#Regular import. Matches two tables by all fields.
 		cleaned_data = {}
-		for k, field in self.fields.iteritems():
+		for field_name, field in self.fields.iteritems():
 			value = None
 			if field.slave_field_name: # Field may not exist in slave table 
 				value = getattr(slave_record,field.slave_field_name)
@@ -417,25 +429,25 @@ class BaseImport(object):
 			if field.importation:
 				""" 
 				To conserve memory, related importations (uses_import=OtherImport) store
-				only the pk created. Here we must update our cleaned_data to reflect this
+				only the pk created. But from here on out we need the object.
 				"""
-				try:
-					value = field.master.rel.to.objects.get(pk=value)
-				except field.master.rel.to.DoesNotExist:
+				if str(value) in field._get_variants_for_model(field.master.rel.to):
+					value = field.master.rel.to.objects.get(pk=field._get_variants_for_model(field.master.rel.to)[str(value)])
+				else:
 					"""
 					User needs to take care of it in clean()
 					"""
 					pass
 
-			if value in self.override_values.keys():
-				value = self.override_values[k]
+			if field_name in self.override_values and value in self.override_values[field_name]:
+				value = self.override_values[field_name][value]
 			else:
-				value = self.fields[k].clean(value)
+				value = self.fields[field_name].clean(value)
 
-			cleaned_data[k] = value
+			cleaned_data[field_name] = value
 
-			if hasattr(self, 'clean_%s' % k): # use custom clean_FOO override
-				cleaned_data[k] = getattr(self,'clean_%s' % k)(slave_record,cleaned_data)
+			if hasattr(self, 'clean_%s' % field_name): # use custom clean_FOO override
+				cleaned_data[field_name] = getattr(self,'clean_%s' % field_name)(slave_record,cleaned_data)
 
 		if hasattr(self,'clean'):
 			cleaned_data = self.clean(slave_record,cleaned_data)
@@ -472,8 +484,11 @@ class BaseImport(object):
 
 			# Excluding records already created this run, we return the next in line.
 			try: # Get the next unclaimed copy
-				return self.Meta.master.objects.exclude(pk__in=self.dataset.values()).filter(**cleaned_data)[0]
-			except: # No unclaimed copies exist. Create a new one!
+				clone = self.Meta.master.objects.all()._clone
+			
+				return clone.im_self.exclude(pk__in=self._get_variants_for_model(self.Meta.master).values()).filter(**cleaned_data)[0]
+
+			except IndexError: # No unclaimed copies exist. Create a new one!
 				return self.Meta.master.objects.create(**cleaned_data)
 	
 		except IntegrityError, e: 
@@ -482,7 +497,7 @@ class BaseImport(object):
 				match = re.search("Duplicate entry '(\d+)'",e.args[1])
 				errant_pk = int(match.groups(0)[0])
 			except:
-				import pdb;pdb.runcall(self._escape,cleaned_data,e)
+				pdb.runcall(self._escape,cleaned_data,e)
 
 			# While lots of things can cause dupes, we're only here to fix OneToOne
 			one_to_one_fields = [f for f in self.Meta.master._meta.fields \
@@ -497,7 +512,7 @@ class BaseImport(object):
 						culprit.append((d,f))
 
 			if len(culprit) != 1:
-				import pdb;pdb.set_trace()
+				pdb.set_trace()
 				raise Exception("Hell appears to have frozen over")
 
 			errant_model, errant_field = culprit[0]
@@ -507,19 +522,11 @@ class BaseImport(object):
 			del cleaned_data_nodupes[errant_field.verbose_name]
 			# First, let's see if this model has already been imported and has its own correct errant model
 			try:
-				correct_dupe = self.Meta.master.objects.exclude(pk__in=self.dataset.values()).get(**cleaned_data_nodupes)
+				correct_dupe = self.Meta.master.objects.exclude(pk__in=self._get_variants_for_model(self.Meta.master).values()).get(**cleaned_data_nodupes)
 				cleaned_data[f.verbose_name] = getattr(correct_dupe,f.verbose_name)
-				#if self.Meta.master.objects.filter(**cleaned_data_nodupes).exclude(\
-				#		pk__in=self.dataset.values()).count() == 1:
-				#	correct_dupe = getattr(self.Meta.master.objects.exclude(\
-				#			pk__in=self.dataset.values()).get(**cleaned_data_nodupes),f.verbose_name)
-				#	cleaned_data[f.verbose_name] = correct_dupe
-				#	# Recurse. Maybe there's other issues to solve.
-				#	return self._hard_import_commit(cleaned_data,unique)
-			#
 				return self._hard_import_commit(cleaned_data,unique)
 
-			except:
+			except Exception, e:
 				pass
 
 			# Ahh, ok. We clearly just need a new copy of the errant model
@@ -530,7 +537,7 @@ class BaseImport(object):
 			return self._hard_import_commit(cleaned_data,unique)
 
 		except Exception, e:
-			import pdb;pdb.runcall(self._escape,cleaned_data,e)
+			pdb.runcall(self._escape,cleaned_data,e)
 
 	def _escape(self,cleaned_data,e):
 		print '==ERR0R=ADDING=MODEL=======(Probably your fault)==========='
