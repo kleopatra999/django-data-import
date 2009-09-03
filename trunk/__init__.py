@@ -2,6 +2,7 @@ import pdb
 import re
 from time import sleep
 from decimal import Decimal
+from sets import Set
 
 from django.core.paginator import Paginator
 from django.db.models import get_model
@@ -16,6 +17,9 @@ from django.db.models import ForeignKey
 from django.db.models import OneToOneField 
 from django.db.models import ManyToManyField 
 from django.db.models.query import QuerySet
+
+import logging
+logging.basicConfig(filename='/tmp/import.log',level=logging.DEBUG)
 
 class ValidationError(Exception):
     "(Almost straight copy from django.forms)"
@@ -333,7 +337,7 @@ class BaseImport(ImportBaseClass):
 		except AttributeError:
 			self.Meta.master = get_model(*self.Meta.master.split('.'))
 
-		print "Initializing conversion: %s" % self.__class__.__name__
+		logging.debug("Initializing conversion: %s" % self.__class__.__name__)
 		if variants:
 			self.master_variants=variants
 		self.field_variants = {} 
@@ -375,7 +379,7 @@ class BaseImport(ImportBaseClass):
 			self.do_import()
 
 	def do_import(self,verify_by=None,unique=False):
-		print "Importing %s" % self.__class__.__name__
+		logging.debug("Importing %s" % self.__class__.__name__)
 		paginator = Paginator(self.Meta.queryset,250)
 		for i in range(0,paginator.num_pages):
 			print "*"
@@ -395,6 +399,7 @@ class BaseImport(ImportBaseClass):
 					self.post_save(slave_record,new_model)
 
 		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created)
+		logging.debug("Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created))
 		#print "Here's a shell to inspect what was created, or not"
 		#import pdb;pdb.set_trace()
 		self.created = 0 
@@ -439,6 +444,8 @@ class BaseImport(ImportBaseClass):
 					"""
 					pass
 
+				logging.debug("Grabbing related, ended up with %s" % value)
+
 			if field_name in self.override_values and value in self.override_values[field_name]:
 				value = self.override_values[field_name][value]
 			else:
@@ -462,6 +469,7 @@ class BaseImport(ImportBaseClass):
 			new_model, created = self.Meta.master.objects.get_or_create(**cleaned_data)
 			if created:
 				self.created += 1
+				logging.debug("Created %s" % new_model)
 			return new_model
 
 		except self.Meta.master.MultipleObjectsReturned:
@@ -482,14 +490,16 @@ class BaseImport(ImportBaseClass):
 			if not unique:
 				raise self.Meta.master.MultipleObjectsReturned
 
-			# Excluding records already created this run, we return the next in line.
-			try: # Get the next unclaimed copy
-				clone = self.Meta.master.objects.all()._clone
-			
-				return clone.im_self.exclude(pk__in=self._get_variants_for_model(self.Meta.master).values()).filter(**cleaned_data)[0]
+			# Excluding records already created this run, we return the next in line. Get the next unclaimed copy
+			all_dupes = self.Meta.master.objects.filter(**cleaned_data).values_list('pk',flat=True).distinct()
+			unprocessed_ids = Set(all_dupes) - Set(self._get_variants_for_model(self.Meta.master).values())
+			if unprocessed_ids:
+				unprocessed_id = unprocessed_ids.pop()
+				logging.debug("Multiple objects returned, grabbing latest unprocessed")
+				return self.Meta.master.objects.get(pk=unprocessed_id)
 
-			except IndexError: # No unclaimed copies exist. Create a new one!
-				return self.Meta.master.objects.create(**cleaned_data)
+			logging.debug("Multiple objects returned; created a new one")
+			return self.Meta.master.objects.create(**cleaned_data)
 	
 		except IntegrityError, e: 
 			# Hate this next line. Probably MySQL only. Sorry!
@@ -499,6 +509,7 @@ class BaseImport(ImportBaseClass):
 			except:
 				pdb.runcall(self._escape,cleaned_data,e)
 
+			logging.debug("Duplicate entry error (OneToOneField respect phase)")
 			# While lots of things can cause dupes, we're only here to fix OneToOne
 			one_to_one_fields = [f for f in self.Meta.master._meta.fields \
 					if isinstance(f,OneToOneField)]
@@ -521,14 +532,16 @@ class BaseImport(ImportBaseClass):
 
 			del cleaned_data_nodupes[errant_field.verbose_name]
 			# First, let's see if this model has already been imported and has its own correct errant model
-			try:
-				correct_dupe = self.Meta.master.objects.exclude(pk__in=self._get_variants_for_model(self.Meta.master).values()).get(**cleaned_data_nodupes)
+			all_dupes = self.Meta.master.objects.filter(**cleaned_data).values_list('pk',flat=True).distinct()
+			unprocessed_ids = Set(all_dupes) - Set(self._get_variants_for_model(self.Meta.master).values())
+			if unprocessed_ids:
+				unprocessed_id = unprocessed_ids.pop()
+				logging.debug("Got a OneToOne keyerror but just grabbed the latest unclaimed copy")
+				correct_dupe = self.Meta.master.objects.filter(pk=unprocessed_id).get(**cleaned_data_nodupes)
 				cleaned_data[f.verbose_name] = getattr(correct_dupe,f.verbose_name)
 				return self._hard_import_commit(cleaned_data,unique)
 
-			except Exception, e:
-				pass
-
+			logging.debug("Got a OneToOne keyerror, but created one anew")
 			# Ahh, ok. We clearly just need a new copy of the errant model
 			cleaned_data[errant_field.verbose_name].pk = None
 			cleaned_data[errant_field.verbose_name].save()
