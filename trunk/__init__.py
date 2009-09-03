@@ -384,7 +384,7 @@ class BaseImport(ImportBaseClass):
 		for i in range(0,paginator.num_pages):
 			print "*"
 			for slave_record in paginator.page(i + 1).object_list:
-				sleep(.01) # This seems to yield massive performance improvements.
+				sleep(.001) # This seems to yield massive performance improvements.
 				new_model = None
 				if verify_by: #Won't fire without imported data
 					new_model = self._soft_import(slave_record,verify_by)
