@@ -19,7 +19,7 @@ from django.db.models import ManyToManyField
 from django.db.models.query import QuerySet
 
 import logging
-logging.basicConfig(filename='/tmp/import.log',level=logging.DEBUG)
+#logging.basicConfig(filename='/tmp/import.log',level=logging.DEBUG)
 
 class ValidationError(Exception):
     "(Almost straight copy from django.forms)"
@@ -107,7 +107,7 @@ class Field(ImportBaseClass):
 					" Recursion ahoy!! "
 					self.importation.do_import(unique=unique,verify_by=self.verify_by) 
 					#self._get_variants_for_model(self.master.rel.to).update(self.importation.dataset)
-				else:
+				elif self.prompt:
 					self._update_get_variants_for_model()
 
 	def _update_get_variants_for_model(self):
@@ -235,8 +235,8 @@ class Field(ImportBaseClass):
 			"""
 			Map was given, a la importer.Field('x',map={'0': False,'1': True}) 
 			"""
-			if str(value) in self.map:
-				value = self.map[str(value)]
+			if value in self.map:
+				value = self.map[value]
 
 		if hasattr(self,'custom_clean_function'):
 			"""
@@ -249,7 +249,7 @@ class Field(ImportBaseClass):
 			Some core prep work for FKs. Use the variant already provided by user.
 			"""
 			try:
-				return self._get_variants_for_model(self.master.rel.to)[str(value).lower()]
+				return self._get_variants_for_model(self.master.rel.to)[value]
 			except KeyError:
 				pass
 				
@@ -267,7 +267,11 @@ class Field(ImportBaseClass):
 			Do some quick and dirty char encoding to make sure source data wasn't junky
 			"""
 			if value:
-				value = str(value).encode('ascii','ignore')
+				try:
+					value = value.encode('ascii','ignore')
+				except:
+					return value
+
 				if self.prompt:
 					prompted_value = False
 					while prompted_value == False:
@@ -340,6 +344,7 @@ class BaseImport(ImportBaseClass):
 		logging.debug("Initializing conversion: %s" % self.__class__.__name__)
 		if variants:
 			self.master_variants=variants
+
 		self.field_variants = {} 
 		self.parent = parent
 		if slave:
@@ -376,14 +381,32 @@ class BaseImport(ImportBaseClass):
 			self.fields[i].prep_work(i,self)
 
 		if not parent:
+			# Remove master variant lists which aren't needed
+			# This should be expanded to clean up before the last conversion
+			
+			remove_keys = [i for i in self.master_variants.keys()]
+			for i in self.fields:
+				if hasattr('rel',i):
+					if i.rel.to.__class__.__name__ in remove_keys:
+						del remove_keys[i.rel.to.__class__.__name__]
+
+			for i in remove_keys:
+				del self.master_variants[i]
+
 			self.do_import()
 
 	def do_import(self,verify_by=None,unique=False):
 		logging.debug("Importing %s" % self.__class__.__name__)
-		paginator = Paginator(self.Meta.queryset,250)
+		paginator = Paginator(self.Meta.queryset,1000)
+		check_variants = False
+		if self._get_variants_for_model(self.Meta.master): # Its possible we're importing the same model twice.
+			check_variants = True # If so, make sure to check before conducting any imports
+
 		for i in range(0,paginator.num_pages):
-			print "*"
 			for slave_record in paginator.page(i + 1).object_list:
+				if check_variants and str(slave_record.pk) in self._get_variants_for_model(self.Meta.master):
+					continue
+
 				sleep(.001) # This seems to yield massive performance improvements.
 				new_model = None
 				if verify_by: #Won't fire without imported data
@@ -392,11 +415,12 @@ class BaseImport(ImportBaseClass):
 				if not new_model:
 					new_model = self._hard_import(slave_record,unique)
 
-				self._get_variants_for_model(self.Meta.master).update({str(slave_record.pk): new_model.pk})
+				if new_model: 
+					if self.parent:
+						self._get_variants_for_model(self.Meta.master).update({slave_record.pk: new_model.pk})
 				#self.dataset[str(slave_record.pk)] = new_model.pk
-				
-				if new_model and hasattr(self,'post_save'):
-					self.post_save(slave_record,new_model)
+					if hasattr(self,'post_save'):
+						self.post_save(slave_record,new_model)
 
 		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created)
 		logging.debug("Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created))
@@ -436,8 +460,8 @@ class BaseImport(ImportBaseClass):
 				To conserve memory, related importations (uses_import=OtherImport) store
 				only the pk created. But from here on out we need the object.
 				"""
-				if str(value) in field._get_variants_for_model(field.master.rel.to):
-					value = field.master.rel.to.objects.get(pk=field._get_variants_for_model(field.master.rel.to)[str(value)])
+				if value in field._get_variants_for_model(field.master.rel.to):
+					value = field.master.rel.to.objects.get(pk=field._get_variants_for_model(field.master.rel.to)[value])
 				else:
 					"""
 					User needs to take care of it in clean()
