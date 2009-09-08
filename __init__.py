@@ -8,7 +8,7 @@ from django.core.paginator import Paginator
 from django.db.models import get_model
 from django.utils.datastructures import SortedDict
 from django.utils.encoding import smart_unicode
-from django.db import IntegrityError
+from django.db import IntegrityError, reset_queries
 
 from django.db.models.fields import DecimalField 
 from django.db.models.fields import CharField 
@@ -18,7 +18,9 @@ from django.db.models import OneToOneField
 from django.db.models import ManyToManyField 
 from django.db.models.query import QuerySet
 
-import logging
+from logging import getLogger
+
+log = getLogger(__name__)
 #logging.basicConfig(filename='/tmp/import.log',level=logging.DEBUG)
 
 class ValidationError(Exception):
@@ -354,7 +356,7 @@ class BaseImport(ImportBaseClass):
 		except AttributeError:
 			self.Meta.master = get_model(*self.Meta.master.split('.'))
 
-		logging.debug("Initializing conversion: %s" % self.__class__.__name__)
+		log.debug("Initializing conversion: %s" % self.__class__.__name__)
 		if variants:
 			self.master_variants=variants
 
@@ -411,7 +413,7 @@ class BaseImport(ImportBaseClass):
 			self.do_import()
 
 	def do_import(self,verify_by=None,unique=False):
-		logging.debug("Importing %s" % self.__class__.__name__)
+		log.debug("Importing %s" % self.__class__.__name__)
 
 		"""
 		We've going to do an additional check for imports which have already been done
@@ -427,6 +429,7 @@ class BaseImport(ImportBaseClass):
 		"""
 		paginator = Paginator(self.Meta.queryset,1000)
 		for i in range(0,paginator.num_pages):
+			reset_queries()
 			for slave_record in paginator.page(i + 1).object_list:
 				"""
 				Have we already processed this record in another loop? If so, skip!
@@ -467,7 +470,7 @@ class BaseImport(ImportBaseClass):
 						self.post_save(slave_record,new_model)
 
 		print "Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created)
-		logging.debug("Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created))
+		log.debug("Processed: %s, Created: %s" % (self.Meta.queryset.count(),self.created))
 		self.created = 0 
 
 	"""
@@ -524,7 +527,7 @@ class BaseImport(ImportBaseClass):
 					"""
 					pass
 
-				logging.debug("Grabbing related, ended up with %s" % value)
+				log.debug("Grabbing related, ended up with %s" % value)
 
 			"""
 			Maybe a value was hard-passed into the field. Just use it.
@@ -563,7 +566,7 @@ class BaseImport(ImportBaseClass):
 			new_model, created = self.Meta.master.objects.get_or_create(**cleaned_data)
 			if created:
 				self.created += 1
-				logging.debug("Created %s" % new_model)
+				log.debug("Created %s" % new_model)
 			return new_model
 
 		except self.Meta.master.MultipleObjectsReturned:
@@ -589,10 +592,10 @@ class BaseImport(ImportBaseClass):
 			unprocessed_ids = Set(all_dupes) - Set(self._get_variants_for_model(self.Meta.master).values())
 			if unprocessed_ids:
 				unprocessed_id = unprocessed_ids.pop()
-				logging.debug("Multiple objects returned, grabbing latest unprocessed")
+				log.debug("Multiple objects returned, grabbing latest unprocessed")
 				return self.Meta.master.objects.get(pk=unprocessed_id)
 
-			logging.debug("Multiple objects returned; created a new one")
+			log.debug("Multiple objects returned; created a new one")
 			return self.Meta.master.objects.create(**cleaned_data)
 	
 		except IntegrityError, e: 
@@ -603,7 +606,7 @@ class BaseImport(ImportBaseClass):
 			except:
 				pdb.runcall(self._escape,cleaned_data,e)
 
-			logging.debug("Duplicate entry error (OneToOneField respect phase)")
+			log.debug("Duplicate entry error (OneToOneField respect phase)")
 			# While lots of things can cause dupes, we're only here to fix OneToOne
 			one_to_one_fields = [f for f in self.Meta.master._meta.fields \
 					if isinstance(f,OneToOneField)]
@@ -630,12 +633,12 @@ class BaseImport(ImportBaseClass):
 			unprocessed_ids = Set(all_dupes) - Set(self._get_variants_for_model(self.Meta.master).values())
 			if unprocessed_ids:
 				unprocessed_id = unprocessed_ids.pop()
-				logging.debug("Got a OneToOne keyerror but just grabbed the latest unclaimed copy")
+				log.debug("Got a OneToOne keyerror but just grabbed the latest unclaimed copy")
 				correct_dupe = self.Meta.master.objects.filter(pk=unprocessed_id).get(**cleaned_data_nodupes)
 				cleaned_data[f.verbose_name] = getattr(correct_dupe,f.verbose_name)
 				return self._hard_import_commit(cleaned_data,unique)
 
-			logging.debug("Got a OneToOne keyerror, but created one anew")
+			log.debug("Got a OneToOne keyerror, but created one anew")
 			# Ahh, ok. We clearly just need a new copy of the errant model
 			cleaned_data[errant_field.verbose_name].pk = None
 			cleaned_data[errant_field.verbose_name].save()
