@@ -5,6 +5,6 @@ class Command(BaseCommand):
 	args = ['conversion class...']
 
 	def handle(self, conversion_class, **options):
-		imports = __import__('conversion/imports')
+		imports = __import__('conversion.imports')
 		conversion = getattr(imports,conversion_class)
 		conversion()
